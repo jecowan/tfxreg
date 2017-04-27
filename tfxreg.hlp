@@ -1,0 +1,82 @@
+{smcl}
+{* 27apr2017 version 1.4}{...}
+{cmd:help tfxreg}
+{hline}
+
+{title:Title}
+
+{p2colset 5 17 19 2}{...}
+{p2col :{hi:tfxreg} {hline 2}}Efficiently estimate teacher fixed effects with weighting and clustering{p_end}
+{p2colreset}{...}
+
+
+{title:Syntax}
+
+{p 8 20}{cmd:tfxreg}
+varlist
+{ifin},
+{opt t:eacher(varname)}
+{opt fe(name)}
+{opt se(name)}
+{opt xb(name)}
+{opt r:eff(varname)}
+[ {opt w:eights(varname)}
+{opt robust} ]
+
+
+{title:Description}
+
+{pstd}{cmd:tfxreg} provides the capability to estimate teacher value-added measures.
+{cmd:tfxreg} computes teacher fixed effects with sum-to-zero constraints (Mihaly et. al. 2010) and permits weights and clustering in estimation. Estimation exploits inversion identities to speed estimation with one level of high dimensional fixed effects.
+
+For quicker processing, it is recommended, but not required, that the data be sorted by group ({opt reff}) and teacher ({opt teacher}).
+
+{title:Options}
+
+{phang}
+{opt teacher(varname)} specifies the (numeric) identification variable for the teacher.
+
+{phang}
+{opt fe(name)} specifies the name of a new variable to store the teacher effects.
+
+{phang}
+{opt se(name)} specifies the name of a new variable to store the standard errors of the teacher effects.
+
+{phang}
+{opt xb(name)} specifies the name of a new variable to store the predicted student outcomes.
+
+{phang}
+{opt weights(varname)} specifies the name of a variable that contains the weights attached to each observation.
+Usually, this should be the fraction of a student's time spent with the given teacher.
+
+{phang}
+{opt reff(varname)} specifies the name of a variable containing the reference collections. {cmd:tfxreg} imposes sum-to-zero constraints on the teacher fixed effects within {it:varname}.
+	The process is described in more detail in Mihaly et. al. (2010).
+
+{phang}
+	For proper intrepretation of the teacher effects, indicators for {it:varname} must be included in the regression. {cmd:tfxreg} aborts with error if this is not the case.
+	If {cmd:tfxreg} believes a reference indicator you have entered is missing, it may be because you have entered another collection of fully collinear variables. The error message should give some indication of what these may be.
+
+{phang}
+{opt robust} estimates Hubert-White heteroskedasticity-robust standard errors.
+
+
+{title:Example}
+
+{phang}
+{cmd:. tfxreg y x reff, teacher(teachid) reff(reff) fe(fe) se(se)}
+
+{title:References}
+
+{phang}Cornelissen, T. (2008).  The Stata command felsdvreg to fit a linear model
+with two high-dimensional fixed effects.  {it:Stata Journal}, 8, 170-189.
+
+{phang}Henderson, H. and Searle, S. (1981). On deriving the inverse of a sum of matrices. {it: SIAM Review}, 23(1), 53-60.
+
+{phang}Mihaly, K. et. al. (2010). Centering and reference groups for estimates of fixed effects: Modifications to felsdvreg. {it:Stata Journal}, 10, 82-103.
+
+
+{title:Author}
+
+    James Cowan
+    jecowan@gmail.com
