@@ -1,5 +1,5 @@
 {smcl}
-{* 27apr2017 version 1.4}{...}
+{* 02jan2018 version 1.5.0}{...}
 {cmd:help tfxreg}
 {hline}
 
@@ -18,10 +18,7 @@ varlist
 {opt t:eacher(varname)}
 {opt fe(name)}
 {opt se(name)}
-{opt xb(name)}
-{opt r:eff(varname)}
-[ {opt w:eights(varname)}
-{opt robust} ]
+[ {opt w:eights(varname)} ]
 
 
 {title:Description}
@@ -43,28 +40,14 @@ For quicker processing, it is recommended, but not required, that the data be so
 {opt se(name)} specifies the name of a new variable to store the standard errors of the teacher effects.
 
 {phang}
-{opt xb(name)} specifies the name of a new variable to store the predicted student outcomes.
-
-{phang}
 {opt weights(varname)} specifies the name of a variable that contains the weights attached to each observation.
 Usually, this should be the fraction of a student's time spent with the given teacher.
-
-{phang}
-{opt reff(varname)} specifies the name of a variable containing the reference collections. {cmd:tfxreg} imposes sum-to-zero constraints on the teacher fixed effects within {it:varname}.
-	The process is described in more detail in Mihaly et. al. (2010).
-
-{phang}
-	For proper intrepretation of the teacher effects, indicators for {it:varname} must be included in the regression. {cmd:tfxreg} aborts with error if this is not the case.
-	If {cmd:tfxreg} believes a reference indicator you have entered is missing, it may be because you have entered another collection of fully collinear variables. The error message should give some indication of what these may be.
-
-{phang}
-{opt robust} estimates Hubert-White heteroskedasticity-robust standard errors.
 
 
 {title:Example}
 
 {phang}
-{cmd:. tfxreg y x reff, teacher(teachid) reff(reff) fe(fe) se(se)}
+{cmd:. tfxreg y x, teacher(teachid) fe(fe) se(se)}
 
 {title:References}
 
