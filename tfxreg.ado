@@ -1,4 +1,4 @@
-*! tfxreg v1.5.2	29jan2019
+*! tfxreg v1.5	29jan2019
 * Calculates teacher value-added using matrix inversion identities and
 * sum-to-zero constraints from felsdvredgm (Mihaly et al 2010).
 
@@ -9,14 +9,15 @@
 *01.02.18 Revised solution of standard errors to avoid constructing JxJ matrix.
 *         Deprecated reference collection feature.
 *01.29.19 Added clustering subcommand based on Moulton correction.
+*         Added fvvarlist support.
+*         Switched internal coefficient estimation to areg.
 
 program tfxreg, eclass sortpreserve
-	version 11
-	syntax varlist [if] [in], Teacher(varname) ///
-    fe(name) se(name) [ cluster(varname) xb(name) Weights(varname) ]
+	syntax varlist(fv) [if] [in], Teacher(varname) ///
+    fe(name) se(name) [ xb(name) Resid(name) cluster(varname) Weights(varname) ]
 	marksample touse
 
-tempvar sumwt wt sample miss res tid cid const
+tempvar sumwt wt sample miss res tid cid resid_dr resid_r cflag
 tempname b V var_e var_jhat var_j var_e_g var_jhat_g var_j_g
 
 tokenize `varlist'
@@ -24,22 +25,29 @@ local depvar `1'
 macro shift
 local indepvar `*'
 
+// Expand factor variables.
+local fvops = "`s(fvops)'" == "true" | _caller() >= 11
+if `fvops' {
+  fvexpand `indepvar'
+  local `indepvar' r(varlist)
+}
+
 // Generate internal teacher id and sort.
-qui egen `tid'=group(`teacher')
+qui egen `tid' = group(`teacher')
 sort `tid'
-if "`class'"!="" {
-  egen `cid'=group(`teacher' `class')
+if "`class'" != "" {
+  egen `cid' = group(`teacher' `class')
   sort `tid' `class'
 }
 
 // Drop existing variables and generate regression sample
 novarabbrev {
 	cap drop `fe'
-	if _rc ==0	di "note: `fe' already exists and will be replaced."
+	if _rc == 0  di "note: `fe' already exists and will be replaced."
 	cap drop `se'
-	if _rc ==0	di "note: `se' already exists and will be replaced."
+	if _rc == 0  di "note: `se' already exists and will be replaced."
 	cap drop `xb'
-	if _rc==0 di "note: `xb' already exists and will be replaced."
+	if _rc == 0  di "note: `xb' already exists and will be replaced."
 }
 
 if "`weights'"!=""	qui egen `miss'=rowmiss(`varlist' `teacher' `weights')
@@ -47,20 +55,6 @@ else qui egen `miss'=rowmiss(`varlist' `teacher')
 qui gen `sample'=0
 qui replace `sample'=1 if `touse' & `miss'==0
 
-// Reference collection.
-if "`reff'"!="" {
-  di in red "WARNING: Reference collection feature deprecated."
-  di in red "Check regression output to ensure all necessary"
-  di in red "variables have been included."
-  di in red "If you need this feature, consider using felsdvregdm."
-}
-qui gen `const'=1
-local indepvar `indepvar' `const'
-
-
-// Check for collinear regressors.
-_rmcoll `indepvar', noconstant
-local indepvar = r(varlist)
 
 // Rescale so that weights sum to the number of observations.
 if "`weights'"!="" {
@@ -71,13 +65,42 @@ else {
 	qui gen `wt'=1
 }
 
+// Obtain coefficients by areg.
+if "`cluster'" == "" qui areg `depvar' `indepvar' [aw = `wt'], absorb(`tid')
+if "`cluster'" != "" {
+  qui areg `depvar' `indepvar' [aw = `wt'], ///
+    absorb(`tid') vce(cluster `cluster')
+  predict `resid_r', r
+  qui icc `resid_r' `cid'
+  local rho = r(icc i)
+  egen `cflag' = tag(`cid')
+  by `tid' `cid': egen `class_size' = total(`sample')
+  by `tid': egen `m' = mean(cond(`cflag' == 1, `class_size', .))
+  by `tid': egen `vm' = sd(cond(`cflag' == 1, `class_size', .))
+  qui replace `vm' = `vm' ^ 2
+  drop `resid_r' `cflag' `class_size'
+}
+predict `resid_dr', dr
+if "`xb'" != ""  predict `xb', xb
+if "`resid'" != ""  predict `resid', r
+
+// Check for collinear regressors.
+_rmcoll `indepvar', noconstant
+local indepvar = r(varlist)
+
 // Send to Mata
 mata: partreg("`depvar'", "`indepvar'", "`tid'", "`cid'","`wt'", "`robust'", "`sample'", "`fe'", "`se'")
+
+if `cluster' != "" {
+  qui replace `se' = `se' * (1 + (`vm'/`m' + `m' - 1) * `rho')
+}
 
 // Process results
 ereturn post `b' `V', depname("`depvar'") obs(`N')
 
 di ""
+di "Variance of classroom effects: `rho'"
+di "Variance of teacher effects: `varfx'"
 ereturn display
 
 end
@@ -99,129 +122,46 @@ void partreg(string scalar yvar, string rowvector xvar, string scalar teachid, s
   xindex 	= st_varindex(tokens(xvar))
   yindex 	= st_varindex(yvar)
   windex 	= st_varindex(weight)
-  st_view(j=.,.,jindex,sample)
-  st_view(X=.,.,(xindex),sample)
-  st_view(y=.,.,yindex,sample)
-  st_view(w=.,.,windex,sample)
+  st_view(j = ., ., jindex, sample)
+  st_view(X = ., ., (xindex), sample)
+  st_view(y = ., ., yindex, sample)
+  st_view(w = ., ., windex, sample)
 
-  PJ   = panelsetup(j,1)
+  PJ   = panelsetup(j, 1)
   nk   = cols(X)
-  nj   = rows(PJ)-1
+  nj   = rows(PJ) - 1
   n    = rows(X)
 
-  // Solve for coefficients.
-  beta  = solvebeta(X,y,w,PJ,nk)
-  r     = y - X[,(1::(nk-1))]*beta
-  gamma = solvegamma(r,w,PJ,nj)
+  // Solve for teacher effects.
+  gamma = solvegamma(r, w, PJ, nj)
   rmean = mean(gamma)
-  beta  = (beta \ rmean)
   gamma = gamma :- rmean
 
   feindex = st_addvar("double", fevar)
-  st_view(fe=.,.,feindex,sample)
-  makefx(fe,PJ,gamma)
+  st_view(fe = ., ., feindex, sample)
+  makefx(fe, PJ, gamma)
   r = r - fe :- rmean
 
   // Estimate variance of coefficients.
   n0   = quadsum(panelsubmatrix(w,1,PJ))
-  vecn = matN(PJ,w,nj)
-  XX   = quadcross(X,w,X)
-  XF   = matXF(X,PJ,w,nj,nk)
-  FFFX = matFFFX(XF,vecn,n0,nj,nk)
-  E    = invsym(XX - XF*FFFX)
-  if (robust=="") & (classid==""){
-    sig2e= quadcross(r,w,r) / (n-nk-nj)
-    vx   = sig2e*E
-    vfx  = sig2e*varmatF(E,FFFX,vecn,n0,nj,nk)
-  }
-
-  // Cluster variance matrix estimation.
-  if (robust=="") & (classid!=""){
-
-    cindex = st_varindex(classid)
-    st_view(c=.,.,cindex,sample)
-    PC = panelsetup(c,1)
-
-    // Estimate variance of combined and w/in classroom residuals.
-    sig2xi = quadcross(r,w,r) / (n-nk-nj)
-    r0 = r
-    for(l=1; l<=rows(PC); l++){
-      r0l = panelsubmatrix(r,l,PC)
-      w0l = panelsubmatrix(w,l,PC)
-      r0[XX] = r0[XX] :- mean(rj,wj)
-    }
-    sig2e = quadcross(r0,w,r0) / (n-nk-nj) // check dof
-    sig2c = sig2xi-sig2e
-
-    // Construct intermediate matrices.
-    BE = FFFX * E
-    XgX = matXgX(X,w,PC,sig2e,sig2c,nk)
-    XgF = matXgF(X,XF,c,w,PJ,sig2e,sig2c,nk)
-
-    // Construct variances.
-    vx = varmatXcl(B,E,BE,XgX,XgF,c,w,sig2e,sig2c,nj)
-    vfx = varmatFcl()
-
-
-    vfx = J(nj+1,1,0)
-    mult = n0 / (1 + n0 * quadsum(vecn:^-1))
-    for(i=1; i<=nj; i++){
-  	  rowi = FFFX[i,] * E
-      for(j=1; j<i; j++){
-  	    vfx[1] = vfx[1] + 2*(rowi * FFFX[j,]' - mult*(1/vecn[i])*(1/vecn[j]))
-  	  }
-  	  prodij = rowi * FFFX[i,]' - mult*(1/vecn[i]^2) + (1/vecn[i])
-  	  vfx[i+1] = prodij
-  	  vfx[1] = vfx[1] + prodij
-    }
-
-
-  }
-  if (robust!="") & (class==""){
-
-  }
-
-  // Return coefficient vector and variance-covariance matrix to Stata
-  xname=st_varname(xindex)
-  xname=xname[1::(length(xname)-1)]
-  xname=(xname, "_cons")
-  st_matrix(st_macroexpand("`"+"b"+"'"),beta')
-  st_matrixcolstripe(st_macroexpand("`"+"b"+"'"),(J(cols(X),1," "),(xname)'))
-  st_matrix(st_macroexpand("`"+"V"+"'"),vx)
-  st_matrixcolstripe(st_macroexpand("`"+"V"+"'") ,(J(cols(X),1," "),(xname)'))
-  st_matrixrowstripe(st_macroexpand("`"+"V"+"'") ,(J(cols(X),1," "),(xname)'))
-  st_local("N", strofreal(n))
+  vecn = matN(PJ, w, nj)
+  XX   = quadcross(X, w, X)
+  XF   = matXF(X, PJ, w, nj, nk)
+  FFFX = matFFFX(XF, vecn, n0, nj, nk)
+  E    = invsym(XX - XF * FFFX)
+  sig2e= quadcross(r, w, r) / (n - nk - nj)
+  vfx  = sig2e * varmatF(E, FFFX, vecn, n0, nj, nk)
 
   // Create fixed effects and standard errors.
   seindex = st_addvar("double", sevar)
-  st_view(se=.,.,seindex,sample)
-  makese(se,PJ,vfx)
+  st_view(se = ., ., seindex, sample)
+  makese(se, PJ, vfx)
 
-  //if (xb!="") {
-  //  xbindex = st_addvar("double", xbvar)
-  //  st_view(xb=.,.,xbindex,sample)
-  //  makeresid(X,y,J,PJ,beta,gamma,u,xb)
-  //}
+  varfx = sum(gamma :^ 2) / (rows(gamma - 1))
+  st_local("varfx", varfx)
 
 }
 
-real vector solvebeta(real matrix X, real vector y, real vector w, real matrix PJ, real scalar nk) {
-
-  real matrix XXdm, xj
-  real vector Xydm, yj, wj, beta
-
-  XXdm = J(nk-1,nk-1,0)
-  Xydm = J(nk-1,1,0)
-  for(j=1; j<=rows(PJ); j++){
-    xj = panelsubmatrix(X,j,PJ)[,(1::(nk-1))]
-  	yj = panelsubmatrix(y,j,PJ)
-  	wj = panelsubmatrix(w,j,PJ)
-  	XXdm = XXdm + quadcrossdev(xj,mean(xj,wj),wj,xj,mean(xj,wj))
-  	Xydm = Xydm + quadcrossdev(xj,mean(xj,wj),wj,yj,mean(yj,wj))
-  }
-  beta = invsym(XXdm)*Xydm
-  return(beta)
-}
 
 real vector solvegamma(real vector r, real vector w, real matrix PJ, real scalar nj) {
   gamma = J(nj+1,1,0)
@@ -347,77 +287,6 @@ real matrix matXgF(real matrix X, real matrix XF, real colvector c, real colvect
   return(XgF)
 }
 
-real vector varmatXcl(real matrix B, real matrix E, real matrix BE, real matrix XgX, real matrix XgF, real vector c, real vector w, real scalar sig2e, real scalar sig2c, real scalar nj) {
-
-  real vector vecc
-  real matrix vx, matf
-
-  vx = C*XgX*C
-  vx = vx - BE' * XgF' * E
-  vx = vx - E * XgF * BE
-  vx = vx + sig2e * BE' * XF' * E
-
-  matf=J(nj,nk,0)
-  for (j=1; j<=rows(PJ); j++) {
-    if (j==1) {
-      cj = panelsubmatrix(c,j,PJ)
-      wj = panelsubmatrix(w,j,PJ)
-      pcj = panelsetup(cj,1)
-      for (l=1; l<=rows(pcj); l++){
-        wcl = panelsubmatrix(wj,l,pcj)
-        vecc = J(nj,1,-quadsum(wcl))
-        matf = matf + BE' * vecc * BE
-      }
-    }
-    else {
-      cj = panelsubmatrix(c,j,PJ)
-      wj = panelsubmatrix(w,j,PJ)
-      pcj = panelsetup(cj,1)
-      for (l=1; l<=rows(pcj); l++){
-        wcl = panelsubmatrix(wj,l,pcj)
-        vecc = J(nj,1,0)
-        vecc[j-1] = quadsum(wcl)
-        matf = matf + BE' * vecc * BE
-      }
-    }
-  }
-  vx = vx + sig2c*matf
-  return(vx)
-}
-
-real vector varmatFcl(real matrix E, real matrix FFFX, real vector vecn, real scalar n0, real scalar nj, real scalar nk) {
-
-  a21m11 = BE * XgX
-
-  vfx = J(nj+1,1,0)
-  for(i=1; i<=nj; i++){
-
-    for(j=1; j<i; j++){
-    }
-
-
-  }
-
-
-
-
-
-  real vector vfx, rowi
-  real scalar prodij, mult
-
-  mult = n0 / (1 + n0 * quadsum(vecn:^-1))
-  for(i=1; i<=nj; i++){
-	  rowi = FFFX[i,] * E
-    for(j=1; j<i; j++){
-	    vfx[1] = vfx[1] + 2*(rowi * FFFX[j,]' - mult*(1/vecn[i])*(1/vecn[j]))
-	  }
-	  prodij = rowi * FFFX[i,]' - mult*(1/vecn[i]^2) + (1/vecn[i])
-	  vfx[i+1] = prodij
-	  vfx[1] = vfx[1] + prodij
-  }
-  return(vfx)
-}
-
 void makefx(real colvector fe, real matrix PJ, real vector gamma)
 {
   real vector feji
@@ -440,18 +309,5 @@ void makese(real colvector se, real matrix PJ, real vector varfx)
   }
 }
 
-real vector estvartfx(real vector r, real vector w, real matrix PJ, real matrix PC, real scalar nj) {
-
-  real vector gammac
-  real saclar sig2psi
-
-  gammac = J(rows(PC),1,0)
-  for(l=1; l<=rows(PC); l++){
-    rl = panelsubmatrix(r,l,PC)
-    wl = panelsubmatrix(w,l,PC)
-    gammac[l] = mean(rl,wl)
-  }
-
-}
 
 end
