@@ -13,9 +13,10 @@
 *         Switched internal coefficient estimation to areg.
 
 program tfxreg, eclass sortpreserve
-	syntax varlist(fv) [if] [in], Teacher(varname) ///
+	syntax varlist(numeric fv) [if] [in], Teacher(varname) ///
     fe(name) se(name) [ xb(name) Resid(name) cluster(varname) Weights(varname) ]
-	marksample touse
+
+marksample touse
 
 tempvar sumwt wt sample miss res tid cid resid_dr resid_r cflag
 tempname b V var_e var_jhat var_j var_e_g var_jhat_g var_j_g
@@ -25,12 +26,6 @@ local depvar `1'
 macro shift
 local indepvar `*'
 
-// Expand factor variables.
-local fvops = "`s(fvops)'" == "true" | _caller() >= 11
-if `fvops' {
-  fvexpand `indepvar'
-  local `indepvar' r(varlist)
-}
 
 // Generate internal teacher id and sort.
 qui egen `tid' = group(`teacher')
@@ -40,7 +35,8 @@ if "`class'" != "" {
   sort `tid' `class'
 }
 
-// Drop existing variables and generate regression sample
+
+// Drop existing variables.
 novarabbrev {
 	cap drop `fe'
 	if _rc == 0  di "note: `fe' already exists and will be replaced."
@@ -50,14 +46,12 @@ novarabbrev {
 	if _rc == 0  di "note: `xb' already exists and will be replaced."
 }
 
-if "`weights'"!=""	qui egen `miss'=rowmiss(`varlist' `teacher' `weights')
-else qui egen `miss'=rowmiss(`varlist' `teacher')
-qui gen `sample'=0
-qui replace `sample'=1 if `touse' & `miss'==0
-
+// Reset estimation sample.
+if "`weights'" != ""	qui replace `touse' = 0 if `weights' == .
+qui replace `touse' = 0 if `tid' == .
 
 // Rescale so that weights sum to the number of observations.
-if "`weights'"!="" {
+if "`weights'" != "" {
 	qui sum `weights' if `sample'==1
 	qui gen `wt'=`weights'/r(mean)
 }
@@ -65,10 +59,27 @@ else {
 	qui gen `wt'=1
 }
 
+
+// Parse variable list.
+// Expand factor variables and remove base levels.
+local fvops = "`s(fvops)'" == "true" | _caller() >= 11
+if `fvops' {
+  fvexpand `indepvar'
+  local indepvar `r(varlist)'
+	_ms_extract_varlist `indepvar', noomitted
+  local indepvar `r(varlist)'
+}
+// Drop collinear regressors.
+_rmcoll `indepvar', noconstant
+local indepvar `r(varlist)'
+
+
 // Obtain coefficients by areg.
-if "`cluster'" == "" qui areg `depvar' `indepvar' [aw = `wt'], absorb(`tid')
+if "`cluster'" == "" {
+  qui areg `depvar' `indepvar' if `touse' [aw = `wt'], absorb(`tid')
+}
 if "`cluster'" != "" {
-  qui areg `depvar' `indepvar' [aw = `wt'], ///
+  qui areg `depvar' `indepvar'  if `touse' [aw = `wt'], ///
     absorb(`tid') vce(cluster `cluster')
   predict `resid_r', r
   qui icc `resid_r' `cid'
@@ -84,9 +95,9 @@ predict `resid_dr', dr
 if "`xb'" != ""  predict `xb', xb
 if "`resid'" != ""  predict `resid', r
 
-// Check for collinear regressors.
-_rmcoll `indepvar', noconstant
-local indepvar = r(varlist)
+
+
+
 
 // Send to Mata
 mata: partreg("`depvar'", "`indepvar'", "`tid'", "`cid'","`wt'", "`robust'", "`sample'", "`fe'", "`se'")
@@ -127,12 +138,26 @@ void partreg(string scalar yvar, string rowvector xvar, string scalar teachid, s
   st_view(y = ., ., yindex, sample)
   st_view(w = ., ., windex, sample)
 
+  X = st_data(., "`indepvar'", sample)
+
+
   PJ   = panelsetup(j, 1)
   nk   = cols(X)
   nj   = rows(PJ) - 1
   n    = rows(X)
 
+
   // Solve for teacher effects.
+  n0   = quadsum(panelsubmatrix(w,1,PJ))
+  vecn = matN(PJ, w, nj)
+
+  XX   = quadcross(X, w, X)
+  XF   = matXF(X, PJ, w, nj, nk)
+  FFFX = matFFFX(XF, vecn, n0, nj, nk)
+  E    = invsym(XX - XF * FFFX)
+
+  beta  = solvebeta(X,y,w,PJ,nk)
+  r     = y - X[,(1::(nk-1))]*beta
   gamma = solvegamma(r, w, PJ, nj)
   rmean = mean(gamma)
   gamma = gamma :- rmean
@@ -142,13 +167,8 @@ void partreg(string scalar yvar, string rowvector xvar, string scalar teachid, s
   makefx(fe, PJ, gamma)
   r = r - fe :- rmean
 
+
   // Estimate variance of coefficients.
-  n0   = quadsum(panelsubmatrix(w,1,PJ))
-  vecn = matN(PJ, w, nj)
-  XX   = quadcross(X, w, X)
-  XF   = matXF(X, PJ, w, nj, nk)
-  FFFX = matFFFX(XF, vecn, n0, nj, nk)
-  E    = invsym(XX - XF * FFFX)
   sig2e= quadcross(r, w, r) / (n - nk - nj)
   vfx  = sig2e * varmatF(E, FFFX, vecn, n0, nj, nk)
 
@@ -160,6 +180,37 @@ void partreg(string scalar yvar, string rowvector xvar, string scalar teachid, s
   varfx = sum(gamma :^ 2) / (rows(gamma - 1))
   st_local("varfx", varfx)
 
+  // Return coefficient vector and variance-covariance matrix to Stata
+  xname=st_varname(xindex)
+  xname=xname[1::(length(xname)-1)]
+  xname=(xname, "_cons")
+  st_matrix(st_macroexpand("`"+"b"+"'"),beta')
+  st_matrixcolstripe(st_macroexpand("`"+"b"+"'"),(J(cols(X),1," "),(xname)'))
+  st_matrix(st_macroexpand("`"+"V"+"'"),vx)
+  st_matrixcolstripe(st_macroexpand("`"+"V"+"'") ,(J(cols(X),1," "),(xname)'))
+  st_matrixrowstripe(st_macroexpand("`"+"V"+"'") ,(J(cols(X),1," "),(xname)'))
+  st_local("N", strofreal(n))
+
+
+}
+
+
+real vector solvebeta(real matrix X, real vector y, real vector w, real matrix PJ, real scalar nk) {
+
+  real matrix XXdm, xj
+  real vector Xydm, yj, wj, beta
+
+  XXdm = J(nk-1,nk-1,0)
+  Xydm = J(nk-1,1,0)
+  for(j=1; j<=rows(PJ); j++){
+    xj = panelsubmatrix(X,j,PJ)[,(1::(nk-1))]
+  	yj = panelsubmatrix(y,j,PJ)
+  	wj = panelsubmatrix(w,j,PJ)
+  	XXdm = XXdm + quadcrossdev(xj,mean(xj,wj),wj,xj,mean(xj,wj))
+  	Xydm = Xydm + quadcrossdev(xj,mean(xj,wj),wj,yj,mean(yj,wj))
+  }
+  beta = invsym(XXdm)*Xydm
+  return(beta)
 }
 
 
