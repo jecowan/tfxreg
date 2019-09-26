@@ -1,12 +1,12 @@
 {smcl}
-{* 02jan2018 version 1.5.0}{...}
+{* 26sep2019 version 1.5.0}{...}
 {cmd:help tfxreg}
 {hline}
 
 {title:Title}
 
 {p2colset 5 17 19 2}{...}
-{p2col :{hi:tfxreg} {hline 2}}Efficiently estimate teacher fixed effects with weighting and clustering{p_end}
+{p2col :{hi:tfxreg} {hline 2}}Efficiently estimate teacher fixed effects and standard errors{p_end}
 {p2colreset}{...}
 
 
@@ -25,8 +25,6 @@ varlist
 
 {pstd}{cmd:tfxreg} provides the capability to estimate teacher value-added measures.
 {cmd:tfxreg} computes teacher fixed effects with sum-to-zero constraints (Mihaly et. al. 2010) and permits weights and clustering in estimation. Estimation exploits inversion identities to speed estimation with one level of high dimensional fixed effects.
-
-For quicker processing, it is recommended, but not required, that the data be sorted by group ({opt reff}) and teacher ({opt teacher}).
 
 {title:Options}
 
