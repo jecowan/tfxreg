@@ -13,7 +13,9 @@
 ## Estimation
 
 We assume a student achievement model of the form
+
 $$ A_{ijt} = X_{ijt} \beta + \psi_{j} + \epsilon_{ijt} $$
+
 where $$X_{ijt}$$ is a vector of observable characteristics of students (such as prior test scores), $$\psi_{j}$$, $$j= 0, 1, ..., J$$, is teacher value-added, and $$\epsilon_{ijt}$$ is a residual. McCaffrey et al. (2012) summarize a number of other routines in Stata that can estimate teacher value-added and standard errors with fixed effects models. Relative to those commands, `tfxreg` accomplishes several objectives:
 
 * For models without a second high-dimensional fixed effect, it avoids constructing and inverting $$J \times J$$ matrices, saving on computation time and memory
